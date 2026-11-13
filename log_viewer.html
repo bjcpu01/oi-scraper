@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toplist Log Viewer</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1f; --muted: #6b6b72; --border: #e1e1de; --hover: #f0f0ed;
+  --accent: #2d6bd9; --accent-bg: #e7effc;
+  --ok: #2e7d32; --ok-bg: #e5f3e6; --warn: #a15c00; --warn-bg: #fff1d9; --err: #c62828; --err-bg: #fde8e8;
+  --miss: #6a4fb3; --miss-bg: #eee9fa; --inc: #00727d; --inc-bg: #ddf3f4; --skip: #6b6b72; --skip-bg: #ececea;
+  --debug: #8b8b92; --info: #2d6bd9;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141416; --panel: #1c1c1f; --text: #e9e9ec; --muted: #9a9aa2; --border: #2e2e33; --hover: #25252a;
+    --accent: #6b9bff; --accent-bg: #1f2a40;
+    --ok: #6fcf75; --ok-bg: #1b2e1d; --warn: #f0b04a; --warn-bg: #352812; --err: #ff7b7b; --err-bg: #3a1c1c;
+    --miss: #b59cff; --miss-bg: #2a2340; --inc: #5fd3dc; --inc-bg: #15302f; --skip: #9a9aa2; --skip-bg: #2a2a2e;
+    --debug: #7c7c84; --info: #6b9bff;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141416; --panel: #1c1c1f; --text: #e9e9ec; --muted: #9a9aa2; --border: #2e2e33; --hover: #25252a;
+  --accent: #6b9bff; --accent-bg: #1f2a40;
+  --ok: #6fcf75; --ok-bg: #1b2e1d; --warn: #f0b04a; --warn-bg: #352812; --err: #ff7b7b; --err-bg: #3a1c1c;
+  --miss: #b59cff; --miss-bg: #2a2340; --inc: #5fd3dc; --inc-bg: #15302f; --skip: #9a9aa2; --skip-bg: #2a2a2e;
+  --debug: #7c7c84; --info: #6b9bff;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+header .meta { color: var(--muted); font-size: 13px; }
+header .spacer { flex: 1; }
+main { padding: 16px; max-width: 1600px; margin: 0 auto; }
+button, select, input { font: inherit; color: inherit; }
+.btn { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:disabled { opacity: .45; cursor: default; }
+input[type=text], input[type=date], select { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; min-height: 30px; }
+input[type=file] { display: none; }
+
+#drop { border: 2px dashed var(--border); border-radius: 12px; padding: 48px 16px; text-align: center; color: var(--muted); background: var(--panel); }
+#drop.over { border-color: var(--accent); background: var(--accent-bg); }
+#drop h2 { color: var(--text); font-size: 18px; margin: 0 0 8px; }
+#drop code { font-family: var(--mono); font-size: 13px; }
+body.dragging main::after { content: "Drop log files or the logs folder"; position: fixed; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--accent-bg) 85%, transparent); color: var(--accent); font-size: 20px; font-weight: 600; z-index: 20; }
+
+#app:not([hidden]) { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 16px; align-items: start; }
+#content { min-width: 0; }
+#sidebar { position: sticky; top: 76px; max-height: calc(100vh - 92px); overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 8px; font-size: 13px; }
+#sidebar .sbhead { display: flex; align-items: center; gap: 8px; padding: 0 4px 8px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+#sidebar .sbhead b { flex: 1; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+#sidebar .link { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 12px; }
+.sbnode { display: flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: 6px; }
+.sbnode:hover { background: var(--hover); }
+.sbnode label { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; cursor: pointer; }
+.sbnode .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sbnode .ct { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.sbnode .badge { font-size: 11px; line-height: 16px; padding: 0 5px; }
+.sbtog { border: 0; background: none; cursor: pointer; width: 18px; padding: 0; color: var(--muted); font-size: 11px; }
+.sbsrc > .sbnode { font-weight: 600; }
+.sbkids { margin-left: 14px; }
+.sbfile .nm { font-family: var(--mono); font-size: 12px; }
+.sbfile.off .nm { color: var(--muted); text-decoration: line-through; }
+#sbBtn { display: none; }
+
+.summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.summary .tot { color: var(--text); font-weight: 600; margin-right: 4px; }
+.stat { border: 0; border-radius: 4px; padding: 1px 8px; font-size: 12px; cursor: pointer; font-variant-numeric: tabular-nums; line-height: 20px; }
+.stat:hover, .stat[aria-pressed="true"] { outline: 1px solid currentColor; }
+span.stat { cursor: default; }
+span.stat:hover { outline: 0; }
+
+@media (max-width: 900px) {
+  #app:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
+  #sbBtn { display: inline-block; }
+  #sidebar { display: none; position: fixed; top: 60px; left: 8px; right: 8px; max-height: calc(100vh - 76px); z-index: 10; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  body.sb-open #sidebar { display: block; }
+}
+
+.filters { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+.fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.fgroup > label.lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; }
+.pill { border: 1px solid var(--border); background: var(--panel); border-radius: 999px; padding: 2px 10px; cursor: pointer; font-size: 13px; }
+.pill[aria-pressed="true"] { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); padding: 3px 10px; cursor: pointer; font-size: 13px; border-right: 1px solid var(--border); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; }
+#q { width: 220px; }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 10px; align-items: flex-end; }
+.tabs button { border: 0; background: none; padding: 7px 12px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 500; }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tabs .count { font-size: 12px; color: var(--muted); margin-left: 4px; font-weight: 400; }
+.tabs .right { margin-left: auto; padding-bottom: 6px; display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+
+.tablewrap { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); user-select: none; }
+th.sortable { cursor: pointer; }
+th.sortable:hover { color: var(--text); }
+th .arrow { color: var(--accent); margin-left: 3px; font-size: 11px; }
+td.num, th.num { text-align: right; }
+td.mono { font-family: var(--mono); font-size: 12.5px; }
+td.err { max-width: 320px; overflow: hidden; text-overflow: ellipsis; color: var(--warn); }
+tbody tr.row { cursor: pointer; }
+tbody tr.row:hover { background: var(--hover); }
+tr.detail td { background: var(--bg); padding: 8px 12px; white-space: normal; }
+tr.detail pre { margin: 0; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; }
+.muted { color: var(--muted); }
+.pill.tri[data-state="1"] { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+.pill.tri[data-state="-1"] { background: var(--err-bg); border-color: var(--err); color: var(--err); }
+td.hist { color: var(--muted); font-size: 12px; }
+td.hist .badge { padding: 0 5px; margin: 0 2px; }
+td.hist .badge.cur { outline: 1px solid currentColor; }
+.daylink { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 3px; }
+.daylink:hover { text-decoration-color: var(--accent); }
+
+.badge { display: inline-block; border-radius: 4px; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 20px; }
+.s-done { color: var(--ok); background: var(--ok-bg); }
+.s-failed, .l-ERROR, .l-CRITICAL { color: var(--err); background: var(--err-bg); }
+.s-missing { color: var(--miss); background: var(--miss-bg); }
+.s-skipped { color: var(--skip); background: var(--skip-bg); }
+.s-incomplete { color: var(--inc); background: var(--inc-bg); }
+.s-warn, .l-WARNING { color: var(--warn); background: var(--warn-bg); }
+.l-INFO { color: var(--info); background: var(--accent-bg); }
+.l-DEBUG { color: var(--debug); background: var(--skip-bg); }
+.s-ok { color: var(--ok); background: var(--ok-bg); }
+.s-killed, .s-interrupted { color: var(--inc); background: var(--inc-bg); }
+.s-cancelled { color: var(--skip); background: var(--skip-bg); }
+
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 8px 10px; color: var(--muted); font-size: 13px; }
+
+/* Lines: windowed list */
+.lhead, .lrow { display: grid; grid-template-columns: 150px 82px 78px 1fr; gap: 10px; padding: 0 10px; align-items: center; }
+.lhead { font-size: 12px; color: var(--muted); font-weight: 600; height: 32px; border-bottom: 1px solid var(--border); user-select: none; }
+.lhead span { cursor: pointer; }
+.lhead span.nosort { cursor: default; }
+.vlist { height: calc(100vh - 360px); min-height: 280px; overflow: auto; position: relative; }
+.vspace { position: relative; }
+.lrow { position: absolute; left: 0; right: 0; height: 26px; font: 12.5px/26px var(--mono); cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+.lrow:hover { background: var(--hover); }
+.lrow.sel { background: var(--accent-bg); }
+.lrow > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .badge { line-height: 18px; justify-self: start; }
+.lrow.WARNING { background: color-mix(in srgb, var(--warn-bg) 45%, transparent); }
+.lrow.ERROR, .lrow.CRITICAL { background: color-mix(in srgb, var(--err-bg) 60%, transparent); }
+#lineDetail { border-top: 1px solid var(--border); padding: 8px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; min-height: 40px; max-height: 160px; overflow: auto; color: var(--muted); }
+#lineDetail b { color: var(--text); font-weight: 600; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+
+@media (max-width: 720px) {
+  .lhead, .lrow { grid-template-columns: 70px 64px 1fr; }
+  .lhead > :first-child, .lrow > :first-child { display: none; }
+  #q { width: 100%; }
+  .fgroup { width: 100%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Toplist Log Viewer</h1>
+  <span class="meta" id="loadedMeta"></span>
+  <span class="spacer"></span>
+  <button class="btn" id="sbBtn">Files</button>
+  <button class="btn" id="themeBtn" title="Toggle theme">◐</button>
+  <button class="btn primary" id="openBtn">Open logs folder</button>
+  <button class="btn" id="openFilesBtn">Open files…</button>
+  <input type="file" id="dirInput" webkitdirectory directory multiple>
+  <input type="file" id="fileInput" accept=".log,text/plain" multiple>
+</header>
+
+<main>
+  <section id="drop">
+    <h2>Load logs from <code>toplist_query.py</code></h2>
+    <p>Click <b>Open logs folder</b> and choose the project's <code>logs/</code> directory, or drag the folder or <code>.log</code> files here.</p>
+    <p>Files are parsed locally in your browser. Nothing is uploaded.</p>
+  </section>
+
+  <section id="app" hidden>
+    <aside id="sidebar" aria-label="Log files"></aside>
+    <div id="content">
+
+    <div class="filters">
+      <div class="fgroup"><label class="lbl">Source</label><span id="srcPills"></span></div>
+      <div class="fgroup"><label class="lbl">Show</label>
+        <span class="seg" id="showSeg">
+          <button data-v="all">All</button><button data-v="warn">With warnings</button><button data-v="missing">Missing</button><button data-v="failed">Failed</button><button data-v="incomplete">Incomplete</button><button data-v="skipped">Skipped</button><button data-v="done">Done</button>
+        </span>
+      </div>
+      <div class="fgroup" title="Looks at every run of the same source/type/day. Click a chip to cycle: any → has (in some run) → has not (in any run)">
+        <label class="lbl">Across runs</label><span id="comboPills"></span>
+        <select id="comboPreset" aria-label="Combination presets"></select>
+      </div>
+      <div class="fgroup"><label class="lbl">Level</label><span id="lvPills"></span></div>
+      <div class="fgroup"><label class="lbl" for="dtSel">Type</label>
+        <select id="dtSel"><option value="">All types</option><option value="query_name">query_name</option><option value="email_related">email_related</option></select>
+      </div>
+      <div class="fgroup"><label class="lbl">Data date</label>
+        <input type="date" id="fromIn" aria-label="From"> <span class="muted">→</span> <input type="date" id="toIn" aria-label="To">
+      </div>
+      <div class="fgroup">
+        <input type="text" id="q" placeholder="Search messages, days, errors…">
+        <label class="chk" title="When a day was requested in several runs, keep only its latest non-skipped outcome"><input type="checkbox" id="latestChk"> Latest outcome per day</label>
+        <button class="btn" id="resetBtn">Reset</button>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="days">Days<span class="count" id="cDays"></span></button>
+      <button role="tab" data-tab="lines">Lines<span class="count" id="cLines"></span></button>
+      <button role="tab" data-tab="runs">Runs<span class="count" id="cRuns"></span></button>
+      <span class="right"><span id="sortHint">Click a header to sort, shift-click to add a secondary sort</span><button class="btn" id="csvBtn">Export CSV</button></span>
+    </div>
+
+    <div class="summary" id="summary"></div>
+    <div id="view-days" class="tablewrap"></div>
+    <div id="view-lines" class="tablewrap" hidden>
+      <div class="lhead" id="lhead"></div>
+      <div class="vlist" id="vlist"><div class="vspace" id="vspace"></div></div>
+      <div id="lineDetail">Click a line to see the full message.</div>
+    </div>
+    <div id="view-runs" class="tablewrap" hidden></div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- parsing --
+// Formats mirror toplist_query.py: setup_logging(), run_unit(), with_retries(), log_missing(), main().
+const LINE_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(.*)$/;
+const FILE_RE = /^([a-z0-9]+)_(\d{8}-\d{6})(?:_\d+)?\.log$/i;
+const UNIT_RE = /^(?:\[([a-z]+)\] )?(\d{4}-\d{2}-\d{2}): (.*)$/s;
+const MISS_RE = /^(?:\[([a-z]+)\] )?(\d{4})-(\d{2}): no data upstream for day\(s\) (.+)$/;
+const LABEL_RE = /^(?:\[([a-z]+)\] )?(\d{4}-\d{2}-\d{2})$/;
+const WROTE_RE = /^wrote ([\d,]+) rows -> (.+) \(([\d.]+)s\)$/;
+const ATTEMPT_RE = /^attempt (\d+) failed \((.*)\); retrying in (\d+)s$/s;
+const STARTED_RE = /^run started: source=(\S+) dates=(\S+)\.\.(\S+) \((\w+)\) data_type=(\S+) country_codes=(.+?) outputs<=(\d+)/;
+const FINISHED_RE = /^run finished in (.+?): done=(\d+) skipped=(\d+) missing=(\d+) failed=(\d+)/;
+
+const LVL_RANK = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+const LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"];
+const STATUS_RANK = { failed: 0, incomplete: 1, missing: 2, done: 3, skipped: 4 };
+const RUN_RANK = { killed: 0, interrupted: 1, failed: 2, ok: 3, cancelled: 4 };
+
+function shortErr(s) {
+  const h = /HTTP \d{3}[ A-Za-z]*/.exec(s);
+  if (h) return h[0].trim();
+  return s.replace(/^[\w ]*Error: /, "").slice(0, 100);
+}
+
+function parseFile(name, text) {
+  const fm = FILE_RE.exec(name);
+  const run = {
+    file: name, source: fm ? fm[1].toLowerCase() : name.split(/[_.]/)[0], stamp: fm ? fm[2] : name,
+    first: null, last: null, started: false, dataType: "", from: "", to: "", mode: "", ccs: "", outputs: null,
+    finishedIn: "", counts: null, interrupted: false, cancelled: false, warnings: 0, listFailures: 0, status: "",
+  };
+  const days = new Map();
+  const lines = [];
+  const getDay = (cc, day) => {
+    const k = (cc || "") + "|" + day;
+    let d = days.get(k);
+    if (!d) {
+      d = { run, source: run.source, cc: cc || "", day, status: "", querying: false, wrote: false, missing: false,
+            skipped: false, gaveUp: false, failedListed: false, attempts: 0, err: "", rows: null, secs: null, path: "", lines: [] };
+      days.set(k, d);
+    }
+    return d;
+  };
+  let prev = null, ln = 0, x;
+  for (const raw of text.split(/\r?\n/)) {
+    ln++;
+    const lm = LINE_RE.exec(raw);
+    if (!lm) { if (prev && raw.trim()) prev.msg += "\n" + raw; continue; }
+    const e = { run, t: lm[1], lvl: lm[2], msg: lm[3], ln, ds: null };
+    lines.push(e); prev = e;
+    if (!run.first) run.first = e.t;
+    run.last = e.t;
+    const msg = e.msg;
+    let um;
+    if ((um = MISS_RE.exec(msg))) {
+      e.ds = [];
+      for (const dd of um[4].split(/[,\s]+/).filter(Boolean)) {
+        const d = getDay(um[1], `${um[2]}-${um[3]}-${dd.padStart(2, "0")}`);
+        d.missing = true; d.lines.push(e); e.ds.push(d);
+      }
+    } else if ((um = UNIT_RE.exec(msg))) {
+      const d = getDay(um[1], um[2]); const r = um[3];
+      e.ds = [d]; d.lines.push(e);
+      if (r === "querying") d.querying = true;
+      else if ((x = WROTE_RE.exec(r))) { d.wrote = true; d.rows = +x[1].replace(/,/g, ""); d.path = x[2]; d.secs = +x[3]; }
+      else if (r === "skipped (exists)") d.skipped = true;
+      else if ((x = ATTEMPT_RE.exec(r))) { d.attempts++; run.warnings++; if (!d.err) d.err = shortErr(x[2]); }
+      else if (r.startsWith("giving up after")) { d.gaveUp = true; d.err = d.err || shortErr(r); }
+    } else if ((x = STARTED_RE.exec(msg))) {
+      run.started = true; run.from = x[2]; run.to = x[3]; run.mode = x[4]; run.dataType = x[5]; run.ccs = x[6]; run.outputs = +x[7];
+    } else if ((x = FINISHED_RE.exec(msg))) {
+      run.finishedIn = x[1]; run.counts = { done: +x[2], skipped: +x[3], missing: +x[4], failed: +x[5] };
+    } else if (msg.startsWith("failed units: ")) {
+      for (const label of msg.slice(14).split("; ")) {
+        const lm2 = LABEL_RE.exec(label.trim());
+        if (lm2) { const d = getDay(lm2[1], lm2[2]); d.failedListed = true; d.lines.push(e); }
+      }
+    } else if (/^list \d{4}-\d{2}: attempt/.test(msg)) {
+      run.warnings++;
+    } else if (/^list \d{4}-\d{2}: giving up/.test(msg)) {
+      run.listFailures++;
+    } else if (msg === "interrupted by user") {
+      run.interrupted = true;
+    } else if (msg.startsWith("cancelled")) {
+      run.cancelled = true;
+    }
+  }
+  for (const d of days.values()) {
+    d.status = d.gaveUp || d.failedListed ? "failed" : d.wrote ? "done" : d.missing ? "missing" : d.skipped ? "skipped" : "incomplete";
+    d.warned = d.attempts > 0;
+    d.dataType = run.dataType;
+  }
+  run.status = !run.started ? "cancelled" : run.interrupted ? "interrupted" : !run.counts ? "killed"
+             : run.counts.failed > 0 ? "failed" : "ok";
+  run.dayList = [...days.values()];
+  run.lineCount = lines.length;
+  return { run, days: run.dayList, lines };
+}
+
+// ------------------------------------------------------------------ state --
+const parsed = new Map();             // file name -> {run, days, lines}
+let ALL = { runs: [], days: [], lines: [], sources: [] };
+let VIEW = { days: [], lines: [], runs: [] };
+const defaultState = () => ({
+  tab: "days", src: new Set(), show: "all", lv: new Set(LEVELS), dt: "", from: "", to: "", q: "", latest: false,
+  combo: {},                          // status -> 1 (has, in some run) | -1 (has not, in any run)
+  hiddenFiles: new Set(),             // log file names unticked in the sidebar
+  sort: { days: [{ k: "day", d: 1 }], lines: [{ k: "t", d: 1 }], runs: [{ k: "stamp", d: -1 }] },
+  page: { days: 0, runs: 0 },
+});
+let st = defaultState();
+const expanded = new Set();
+let selLine = null;
+const PAGE = 200;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtNum = (n) => (n == null ? "" : n.toLocaleString());
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const isStamp = (s) => /^\d{8}-\d{6}$/.test(s);
+// 20261108-223435 -> "2026 Nov 08 22:34:35"
+const prettyStamp = (s) => isStamp(s)
+  ? `${s.slice(0, 4)} ${MONTHS[+s.slice(4, 6) - 1]} ${s.slice(6, 8)} ${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}` : s;
+const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+// tranco_20261108-223435.log -> "Tranco 2026 Nov 08 22:34:35" (a "_n" duplicate suffix becomes " #n")
+function prettyName(run) {
+  if (!isStamp(run.stamp)) return run.file;
+  const dup = /_\d{8}-\d{6}_(\d+)\.log$/i.exec(run.file);
+  return `${titleCase(run.source)} ${prettyStamp(run.stamp)}${dup ? " #" + dup[1] : ""}`;
+}
+const monthKey = (run) => isStamp(run.stamp) ? run.stamp.slice(0, 6) : "other";
+const monthLabel = (k) => k === "other" ? "Other" : `${MONTHS[+k.slice(4, 6) - 1]} ${k.slice(0, 4)}`;
+const fileOk = (run) => !st.hiddenFiles.has(run.file);
+const dayKey = (d) => `${d.run.file}|${d.cc}|${d.day}`;
+
+function rebuild() {
+  const runs = [], days = [], lines = [];
+  for (const p of parsed.values()) { runs.push(p.run); days.push(...p.days); lines.push(...p.lines); }
+  ALL = { runs, days, lines, sources: [...new Set(runs.map((r) => r.source))].sort() };
+  // Group the same source/type/cc/day across runs, so filters can combine outcomes from different runs.
+  const groups = new Map();
+  for (const d of days) {
+    const k = `${d.source}|${d.dataType}|${d.cc}|${d.day}`;
+    let g = groups.get(k);
+    if (!g) groups.set(k, (g = { statuses: new Set(), warned: false, members: [] }));
+    g.statuses.add(d.status); g.warned ||= d.warned; g.members.push(d);
+    d.group = g;
+  }
+  for (const g of groups.values()) g.members.sort((a, b) => (a.run.stamp < b.run.stamp ? -1 : a.run.stamp > b.run.stamp ? 1 : 0));
+}
+
+// "Across runs" chips. "queried" = rows were written (status done) in some run.
+const COMBO_KEYS = [["done", "queried"], ["missing", "missing"], ["incomplete", "incomplete"], ["skipped", "skipped"], ["failed", "failed"], ["warn", "warnings"]];
+const COMBO_PRESETS = {
+  "missing:1,done:1": "Missing and queried",
+  "missing:1,done:-1": "Missing and not queried",
+  "missing:1,incomplete:1": "Missing and incomplete",
+  "incomplete:1,done:1": "Incomplete and queried",
+  "skipped:1,done:1": "Skipped and queried",
+  "skipped:1,done:-1": "Skipped and not queried",
+};
+const comboStr = (c) => COMBO_KEYS.map(([k]) => k).filter((k) => c[k]).map((k) => `${k}:${c[k]}`).join(",");
+const comboParse = (s) => Object.fromEntries((s || "").split(",").map((x) => x.split(":"))
+  .filter(([k, v]) => COMBO_KEYS.some(([c]) => c === k) && (v === "1" || v === "-1")).map(([k, v]) => [k, +v]));
+function comboMatch(d) {
+  for (const k in st.combo) {
+    const has = k === "warn" ? d.group.warned : d.group.statuses.has(k);
+    if (has !== (st.combo[k] === 1)) return false;
+  }
+  return true;
+}
+
+function baseDays() {
+  const visible = st.hiddenFiles.size ? ALL.days.filter((d) => fileOk(d.run)) : ALL.days;
+  if (!st.latest) return visible;
+  const best = new Map();
+  for (const d of visible) {
+    const k = `${d.source}|${d.dataType}|${d.cc}|${d.day}`;
+    const cur = best.get(k);
+    const better = !cur || (cur.status === "skipped" && d.status !== "skipped") ||
+      ((cur.status === "skipped") === (d.status === "skipped") && d.run.stamp > cur.run.stamp);
+    if (better) best.set(k, d);
+  }
+  return [...best.values()];
+}
+
+// -------------------------------------------------------------- filtering --
+const showMatch = (d) => st.show === "all" ? true : st.show === "warn" ? d.warned : d.status === st.show;
+const inDate = (day) => (!st.from || day >= st.from) && (!st.to || day <= st.to);
+
+function applyFilters() {
+  const q = st.q.toLowerCase();
+  const srcOk = (s) => !st.src.size || st.src.has(s);
+  const dtOk = (t) => !st.dt || t === st.dt;
+  const days = baseDays();
+  const daySet = st.latest ? new Set(days) : null;
+
+  VIEW.days = days.filter((d) => srcOk(d.source) && dtOk(d.dataType) && inDate(d.day) && showMatch(d) && comboMatch(d) &&
+    (!q || `${d.source} ${d.cc} ${d.day} ${d.status} ${d.err} ${d.path} ${d.run.file}`.toLowerCase().includes(q)));
+
+  const dateFilter = st.from || st.to;
+  const hasCombo = Object.keys(st.combo).length > 0;
+  VIEW.lines = ALL.lines.filter((e) => {
+    if (!fileOk(e.run) || !srcOk(e.run.source) || !dtOk(e.run.dataType) || !st.lv.has(e.lvl === "CRITICAL" ? "ERROR" : e.lvl)) return false;
+    if (dateFilter && !(e.ds && e.ds.some((d) => inDate(d.day)))) return false;
+    if ((st.show !== "all" || hasCombo) && !(e.ds && e.ds.some((d) => showMatch(d) && comboMatch(d) && (!daySet || daySet.has(d))))) return false;
+    return !q || e.msg.toLowerCase().includes(q) || e.run.file.toLowerCase().includes(q);
+  });
+
+  VIEW.runs = ALL.runs.filter((r) => fileOk(r) && srcOk(r.source) && dtOk(r.dataType) &&
+    ((st.show === "all" && !hasCombo) || r.dayList.some((d) => showMatch(d) && comboMatch(d))) &&
+    (!q || `${r.file} ${r.dataType} ${r.mode} ${r.status}`.toLowerCase().includes(q)));
+
+  sortView("days"); sortView("lines"); sortView("runs");
+}
+
+// ---------------------------------------------------------------- sorting --
+const SORT_KEYS = {
+  days: {
+    source: (d) => d.source, dataType: (d) => d.dataType, cc: (d) => d.cc, day: (d) => d.day,
+    status: (d) => STATUS_RANK[d.status], attempts: (d) => d.attempts, err: (d) => d.err,
+    rows: (d) => d.rows ?? -1, secs: (d) => d.secs ?? -1, run: (d) => d.run.stamp,
+  },
+  lines: {
+    t: (e) => e.t, source: (e) => e.run.source, lvl: (e) => LVL_RANK[e.lvl], msg: (e) => e.msg,
+  },
+  runs: {
+    stamp: (r) => r.stamp, source: (r) => r.source, dataType: (r) => r.dataType, from: (r) => r.from, mode: (r) => r.mode,
+    dur: (r) => r.durSecs, done: (r) => r.dayList.filter((d) => d.status === "done").length,
+    warnings: (r) => r.warnings, missing: (r) => r.dayList.filter((d) => d.status === "missing").length,
+    failed: (r) => r.dayList.filter((d) => d.status === "failed").length, lines: (r) => r.lineCount,
+    status: (r) => RUN_RANK[r.status],
+  },
+};
+const TIEBREAK = { days: ["day", "source", "cc", "run"], lines: ["t", "source"], runs: ["stamp"] };
+
+function sortView(tab) {
+  const keys = SORT_KEYS[tab];
+  const spec = [...st.sort[tab]];
+  for (const k of TIEBREAK[tab]) if (!spec.some((s) => s.k === k)) spec.push({ k, d: 1 });
+  const fns = spec.map((s) => [keys[s.k], s.d]);
+  if (tab === "lines") {
+    // Keep each file's original order as the last tiebreak so continuation text stays in place.
+    fns.push([(e) => e.run.file, 1], [(e) => e.ln, 1]);
+  }
+  VIEW[tab].sort((a, b) => {
+    for (const [f, dir] of fns) {
+      const x = f(a), y = f(b);
+      if (x < y) return -dir;
+      if (x > y) return dir;
+    }
+    return 0;
+  });
+}
+
+function onSort(tab, k, shift) {
+  const s = st.sort[tab];
+  const i = s.findIndex((x) => x.k === k);
+  if (shift) {
+    if (i >= 0) s[i].d *= -1; else s.push({ k, d: 1 });
+  } else {
+    st.sort[tab] = i === 0 && s.length === 1 ? [{ k, d: -s[0].d }] : [{ k, d: i >= 0 ? s[i].d : 1 }];
+  }
+  sortView(tab);
+  st.page[tab] = 0;
+  render(); saveHash();
+}
+
+function arrow(tab, k) {
+  const s = st.sort[tab];
+  const i = s.findIndex((x) => x.k === k);
+  if (i < 0) return "";
+  return `<span class="arrow">${s[i].d > 0 ? "▲" : "▼"}${s.length > 1 ? i + 1 : ""}</span>`;
+}
+
+// -------------------------------------------------------------- rendering --
+function render() {
+  $("loadedMeta").textContent = `${ALL.runs.length} log files · ${fmtNum(ALL.lines.length)} lines`;
+  $("cDays").textContent = fmtNum(VIEW.days.length);
+  $("cLines").textContent = fmtNum(VIEW.lines.length);
+  $("cRuns").textContent = fmtNum(VIEW.runs.length);
+  for (const b of document.querySelectorAll(".tabs [data-tab]")) b.setAttribute("aria-selected", b.dataset.tab === st.tab);
+  for (const t of ["days", "lines", "runs"]) $("view-" + t).hidden = st.tab !== t;
+  $("csvBtn").hidden = st.tab === "lines";
+  renderControls();
+  renderSidebar();
+  renderSummary();
+  if (st.tab === "days") renderDays();
+  else if (st.tab === "lines") renderLines(true);
+  else renderRuns();
+}
+
+function renderControls() {
+  $("srcPills").innerHTML = ALL.sources.map((s) =>
+    `<button class="pill" data-src="${esc(s)}" aria-pressed="${st.src.has(s)}">${esc(s)}</button>`).join(" ");
+  $("lvPills").innerHTML = LEVELS.map((l) =>
+    `<button class="pill" data-lv="${l}" aria-pressed="${st.lv.has(l)}" title="Applies to the Lines tab">${l}</button>`).join(" ");
+  for (const b of $("showSeg").children) b.setAttribute("aria-pressed", b.dataset.v === st.show);
+  $("comboPills").innerHTML = COMBO_KEYS.map(([k, label]) => {
+    const v = st.combo[k] || 0;
+    return `<button class="pill tri" data-combo="${k}" data-state="${v}" title="${v === 1 ? "Has" : v === -1 ? "Has not" : "Any"}: ${label}">${v === 1 ? "✓ " : v === -1 ? "✗ " : ""}${label}</button>`;
+  }).join(" ");
+  const cur = comboStr(st.combo);
+  $("comboPreset").innerHTML = `<option value="">${cur && !COMBO_PRESETS[cur] ? "Custom combination" : "Presets…"}</option>` +
+    Object.entries(COMBO_PRESETS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  $("comboPreset").value = COMBO_PRESETS[cur] ? cur : "";
+  $("dtSel").value = st.dt; $("fromIn").value = st.from; $("toIn").value = st.to; $("latestChk").checked = st.latest;
+  if (document.activeElement !== $("q")) $("q").value = st.q;
+}
+
+// Summary of the current (filtered) view, shown above the active table.
+function renderSummary() {
+  const btn = (attr, v, n, label, cls, pressed) => n ? `<button class="stat ${cls}" ${attr}="${v}" aria-pressed="${!!pressed}">${fmtNum(n)} ${label}</button>` : "";
+  let html;
+  if (st.tab === "days") {
+    const ds = VIEW.days, c = (f) => ds.filter(f).length;
+    html = `<span class="tot">${fmtNum(ds.length)} days</span>` + [
+      ["done", "done", c((d) => d.status === "done"), "s-done"],
+      ["warn", "with warnings", c((d) => d.warned), "s-warn"],
+      ["missing", "missing", c((d) => d.status === "missing"), "s-missing"],
+      ["failed", "failed", c((d) => d.status === "failed"), "s-failed"],
+      ["incomplete", "incomplete", c((d) => d.status === "incomplete"), "s-incomplete"],
+      ["skipped", "skipped", c((d) => d.status === "skipped"), "s-skipped"],
+    ].map(([v, label, n, cls]) => btn("data-sum-show", v, n, label, cls, st.show === v)).join("");
+  } else if (st.tab === "lines") {
+    const n = {};
+    for (const e of VIEW.lines) { const l = e.lvl === "CRITICAL" ? "ERROR" : e.lvl; n[l] = (n[l] || 0) + 1; }
+    const only = st.lv.size === 1 ? [...st.lv][0] : "";
+    html = `<span class="tot">${fmtNum(VIEW.lines.length)} lines</span>` +
+      LEVELS.map((l) => btn("data-sum-lv", l, n[l], l, "l-" + l, only === l)).join("");
+  } else {
+    const rs = VIEW.runs, c = (s) => rs.filter((r) => r.status === s).length;
+    const retries = rs.reduce((a, r) => a + r.warnings, 0);
+    html = `<span class="tot">${fmtNum(rs.length)} runs</span>` +
+      [["ok", "ok"], ["killed", "killed"], ["interrupted", "interrupted"], ["cancelled", "cancelled"], ["failed", "failed"]]
+        .map(([s, label]) => c(s) ? `<span class="stat s-${s}">${fmtNum(c(s))} ${label}</span>` : "").join("") +
+      (retries ? `<span class="stat s-warn">${fmtNum(retries)} retries</span>` : "");
+  }
+  $("summary").innerHTML = html;
+}
+
+// Sidebar: source (A→Z) > run month > log file, each with a show/hide checkbox.
+const collapsed = new Set();
+let SB_FILES = new Map();             // node key -> [file names]
+function renderSidebar() {
+  const tree = new Map();
+  for (const r of [...ALL.runs].sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : 0))) {
+    if (!tree.has(r.source)) tree.set(r.source, new Map());
+    const months = tree.get(r.source), mk = monthKey(r);
+    if (!months.has(mk)) months.set(mk, []);
+    months.get(mk).push(r);
+  }
+  SB_FILES = new Map();
+  const box = (key, files) => {
+    SB_FILES.set(key, files);
+    const hidden = files.filter((f) => st.hiddenFiles.has(f)).length;
+    return `<input type="checkbox" data-sb-check="${esc(key)}" ${hidden === 0 ? "checked" : ""} ${hidden && hidden < files.length ? "data-indet" : ""}>`;
+  };
+  const tog = (key) => `<button class="sbtog" data-sb-toggle="${esc(key)}" aria-label="Expand or collapse">${collapsed.has(key) ? "▸" : "▾"}</button>`;
+  let html = `<div class="sbhead"><b>Log files</b><button class="link" data-sb-all="show">Show all</button><button class="link" data-sb-all="hide">Hide all</button></div>`;
+  for (const src of [...tree.keys()].sort()) {
+    const months = tree.get(src);
+    const srcKey = "src:" + src;
+    const srcFiles = [...months.values()].flat().map((r) => r.file);
+    html += `<div class="sbsrc"><div class="sbnode">${tog(srcKey)}<label>${box(srcKey, srcFiles)}<span class="nm">${esc(titleCase(src))}</span></label><span class="ct">${srcFiles.length}</span></div>`;
+    if (!collapsed.has(srcKey)) {
+      html += `<div class="sbkids">`;
+      for (const mk of [...months.keys()].sort()) {
+        const runs = months.get(mk), monKey = `mon:${src}|${mk}`;
+        html += `<div class="sbnode">${tog(monKey)}<label>${box(monKey, runs.map((r) => r.file))}<span class="nm">${monthLabel(mk)}</span></label><span class="ct">${runs.length}</span></div>`;
+        if (!collapsed.has(monKey)) {
+          html += `<div class="sbkids">` + runs.map((r) => `<div class="sbnode sbfile${st.hiddenFiles.has(r.file) ? " off" : ""}" title="${esc(r.file)}">
+            <label>${box("file:" + r.file, [r.file])}<span class="nm">${esc(prettyName(r))}</span></label>
+            ${r.status !== "ok" ? `<span class="badge s-${r.status}">${r.status}</span>` : ""}${r.warnings ? `<span class="badge s-warn" title="retries">${fmtNum(r.warnings)}</span>` : ""}</div>`).join("") + `</div>`;
+        }
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+  const sb = $("sidebar"), top = sb.scrollTop;
+  sb.innerHTML = html;
+  sb.scrollTop = top;
+  for (const cb of sb.querySelectorAll("[data-indet]")) cb.indeterminate = true;
+}
+
+function th(tab, k, label, cls = "") {
+  return `<th class="sortable ${cls}" data-sort-tab="${tab}" data-sort="${k}">${label}${arrow(tab, k)}</th>`;
+}
+
+function pager(tab, total) {
+  const pages = Math.max(1, Math.ceil(total / PAGE));
+  const p = Math.min(st.page[tab], pages - 1);
+  st.page[tab] = p;
+  if (pages <= 1) return "";
+  return `<div class="pager">${fmtNum(p * PAGE + 1)}–${fmtNum(Math.min(total, (p + 1) * PAGE))} of ${fmtNum(total)}
+    <button class="btn" data-page-tab="${tab}" data-page="0" ${p === 0 ? "disabled" : ""}>«</button>
+    <button class="btn" data-page-tab="${tab}" data-page="${p - 1}" ${p === 0 ? "disabled" : ""}>‹ Prev</button>
+    <span>page ${p + 1} / ${pages}</span>
+    <button class="btn" data-page-tab="${tab}" data-page="${p + 1}" ${p >= pages - 1 ? "disabled" : ""}>Next ›</button>
+    <button class="btn" data-page-tab="${tab}" data-page="${pages - 1}" ${p >= pages - 1 ? "disabled" : ""}>»</button></div>`;
+}
+
+function renderDays() {
+  const rows = VIEW.days;
+  if (!rows.length) { $("view-days").innerHTML = `<div class="empty">No days match these filters.</div>`; return; }
+  const pg = pager("days", rows.length);
+  const slice = rows.slice(st.page.days * PAGE, (st.page.days + 1) * PAGE);
+  const hasCC = ALL.days.some((d) => d.cc);
+  const body = slice.map((d) => {
+    const k = dayKey(d);
+    const open = expanded.has(k);
+    const tr = `<tr class="row" data-day="${esc(k)}">
+      <td>${esc(d.source)}</td><td class="muted">${esc(d.dataType)}</td>${hasCC ? `<td>${esc(d.cc) || "<span class=muted>–</span>"}</td>` : ""}
+      <td class="mono"><button class="daylink" data-goto-src="${esc(d.source)}" data-goto-day="${d.day}" title="Open every ${esc(d.source)} log line for ${d.day} (all runs) in a new tab">${d.day}</button></td>
+      <td><span class="badge s-${d.status}">${d.status}</span></td>
+      <td class="num">${d.attempts ? `<span class="badge s-warn">⚠ ${d.attempts}</span>` : ""}</td>
+      <td class="err" title="${esc(d.err)}">${esc(d.err)}</td>
+      <td class="num">${fmtNum(d.rows)}</td>
+      <td class="num">${d.secs == null ? "" : d.secs.toFixed(1) + "s"}</td>
+      <td class="mono muted" title="${esc(d.run.file)}">${esc(prettyStamp(d.run.stamp))}</td>
+      <td class="hist">${d.group.members.length > 1 ? d.group.members.map((m) =>
+        `<span class="badge s-${m.status}${m === d ? " cur" : ""}" title="${esc(m.run.file)}">${m.status}</span>`).join("→") : ""}</td></tr>`;
+    const det = open ? `<tr class="detail"><td colspan="${hasCC ? 11 : 10}"><div class="muted" style="margin-bottom:4px">${esc(d.run.file)}${d.path ? " → " + esc(d.path) : ""}</div><pre>${
+      d.lines.map((e) => `${esc(e.t)} ${e.lvl.padEnd(7)} ${esc(e.msg)}`).join("\n")}</pre></td></tr>` : "";
+    return tr + det;
+  }).join("");
+  $("view-days").innerHTML = `<table><thead><tr>
+    ${th("days", "source", "Source")}${th("days", "dataType", "Type")}${hasCC ? th("days", "cc", "CC") : ""}${th("days", "day", "Date")}
+    ${th("days", "status", "Status")}${th("days", "attempts", "Retries", "num")}${th("days", "err", "Error")}
+    ${th("days", "rows", "Rows", "num")}${th("days", "secs", "Time", "num")}${th("days", "run", "Run")}
+    <th title="Outcome of this day in every run, oldest first; the outlined one is this row">All runs</th>
+    </tr></thead><tbody>${body}</tbody></table>${pg}`;
+}
+
+const ROW_H = 26;
+function renderLines(reset) {
+  const lh = (k, label) => `<span data-sort-tab="lines" data-sort="${k}">${label}${arrow("lines", k)}</span>`;
+  $("lhead").innerHTML = lh("t", "Time") + lh("source", "Source") + lh("lvl", "Level") + lh("msg", "Message");
+  const vl = $("vlist");
+  if (reset) vl.scrollTop = 0;
+  $("vspace").style.height = VIEW.lines.length * ROW_H + "px";
+  if (!VIEW.lines.length) { $("vspace").innerHTML = `<div class="empty">No log lines match these filters.</div>`; return; }
+  drawLines();
+}
+
+function drawLines() {
+  const vl = $("vlist");
+  const start = Math.max(0, Math.floor(vl.scrollTop / ROW_H) - 20);
+  const end = Math.min(VIEW.lines.length, Math.ceil((vl.scrollTop + vl.clientHeight) / ROW_H) + 20);
+  let html = "";
+  for (let i = start; i < end; i++) {
+    const e = VIEW.lines[i];
+    const first = e.msg.split("\n", 1)[0];
+    html += `<div class="lrow ${e.lvl}${e === selLine ? " sel" : ""}" style="top:${i * ROW_H}px" data-i="${i}">
+      <span>${e.t}</span><span>${esc(e.run.source)}</span><span class="badge l-${e.lvl}">${e.lvl}</span><span title="${esc(first)}">${esc(first)}</span></div>`;
+  }
+  $("vspace").innerHTML = html;
+}
+
+function renderRuns() {
+  const rows = VIEW.runs;
+  if (!rows.length) { $("view-runs").innerHTML = `<div class="empty">No runs match these filters.</div>`; return; }
+  const pg = pager("runs", rows.length);
+  const slice = rows.slice(st.page.runs * PAGE, (st.page.runs + 1) * PAGE);
+  const cnt = (r, s) => r.dayList.filter((d) => d.status === s).length;
+  const body = slice.map((r) => `<tr>
+    <td class="mono" title="${esc(r.file)}">${esc(prettyStamp(r.stamp))}</td><td>${esc(r.source)}</td><td class="muted">${esc(r.dataType)}</td>
+    <td class="mono">${r.from ? `${r.from} → ${r.to}` : "<span class=muted>–</span>"}</td><td class="muted">${esc(r.mode)}${r.ccs && r.ccs !== "n/a" ? " · " + esc(r.ccs) : ""}</td>
+    <td class="num">${esc(r.durLabel)}</td>
+    <td class="num">${fmtNum(cnt(r, "done"))}</td><td class="num">${r.warnings ? `<span class="badge s-warn">${fmtNum(r.warnings)}</span>` : 0}</td>
+    <td class="num">${fmtNum(cnt(r, "missing"))}</td><td class="num">${fmtNum(cnt(r, "failed"))}</td><td class="num">${fmtNum(cnt(r, "skipped"))}</td>
+    <td class="num muted">${fmtNum(r.lineCount)}</td>
+    <td><span class="badge s-${r.status}" title="${r.status === "killed" ? "No 'run finished' line: the process was killed or is still running" : ""}">${r.status}</span></td></tr>`).join("");
+  $("view-runs").innerHTML = `<table><thead><tr>
+    ${th("runs", "stamp", "Started")}${th("runs", "source", "Source")}${th("runs", "dataType", "Type")}${th("runs", "from", "Dates")}
+    ${th("runs", "mode", "Mode")}${th("runs", "dur", "Duration", "num")}${th("runs", "done", "Done", "num")}${th("runs", "warnings", "Retries", "num")}
+    ${th("runs", "missing", "Missing", "num")}${th("runs", "failed", "Failed", "num")}<th class="num">Skipped</th>${th("runs", "lines", "Lines", "num")}${th("runs", "status", "Status")}
+    </tr></thead><tbody>${body}</tbody></table>${pg}`;
+}
+
+function finishRun(run) {
+  const toDate = (s) => new Date(s.replace(" ", "T"));
+  const secs = run.first && run.last ? Math.round((toDate(run.last) - toDate(run.first)) / 1000) : 0;
+  run.durSecs = secs;
+  if (run.finishedIn) run.durLabel = run.finishedIn;
+  else {
+    const d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60;
+    run.durLabel = `${d ? d + "d " : ""}${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+}
+
+// ------------------------------------------------------------- URL state --
+function saveHash() {
+  history.replaceState(null, "", hashFor(st));
+}
+
+function hashFor(st) {
+  const p = new URLSearchParams();
+  p.set("tab", st.tab);
+  if (st.src.size) p.set("src", [...st.src].join(","));
+  if (st.show !== "all") p.set("show", st.show);
+  if (st.lv.size !== LEVELS.length) p.set("lv", [...st.lv].join(","));
+  if (st.dt) p.set("dt", st.dt);
+  if (st.from) p.set("from", st.from);
+  if (st.to) p.set("to", st.to);
+  if (st.q) p.set("q", st.q);
+  if (st.latest) p.set("latest", "1");
+  if (comboStr(st.combo)) p.set("c", comboStr(st.combo));
+  if (st.hiddenFiles.size) p.set("hide", [...st.hiddenFiles].map((f) => f.replace(/\.log$/i, "")).join(","));
+  for (const t of ["days", "lines", "runs"]) p.set("s_" + t, st.sort[t].map((s) => `${s.k}:${s.d > 0 ? "a" : "d"}`).join(","));
+  return "#" + p.toString();
+}
+
+function loadHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (!p.toString()) return;
+  const s = defaultState();
+  if (["days", "lines", "runs"].includes(p.get("tab"))) s.tab = p.get("tab");
+  if (p.get("src")) s.src = new Set(p.get("src").split(","));
+  if (p.get("show")) s.show = p.get("show");
+  if (p.has("lv")) s.lv = new Set(p.get("lv").split(",").filter((l) => LEVELS.includes(l)));
+  s.dt = p.get("dt") || ""; s.from = p.get("from") || ""; s.to = p.get("to") || ""; s.q = p.get("q") || "";
+  s.latest = p.get("latest") === "1";
+  s.combo = comboParse(p.get("c"));
+  if (p.get("hide")) s.hiddenFiles = new Set(p.get("hide").split(",").filter(Boolean).map((f) => f + ".log"));
+  for (const t of ["days", "lines", "runs"]) {
+    const v = p.get("s_" + t);
+    if (!v) continue;
+    const spec = v.split(",").map((x) => x.split(":")).filter(([k]) => SORT_KEYS[t][k]).map(([k, d]) => ({ k, d: d === "d" ? -1 : 1 }));
+    if (spec.length) s.sort[t] = spec;
+  }
+  st = s;
+}
+
+// --------------------------------------------------------------- loading --
+const rawTexts = new Map();          // file name -> raw log text (handed to tabs opened from date links)
+
+async function loadFiles(files) {
+  const logs = [...files].filter((f) => f.name.toLowerCase().endsWith(".log"));
+  if (!logs.length) { alert("No .log files found."); return; }
+  const pairs = [];
+  for (const f of logs) pairs.push([f.name, await f.text()]);
+  loadTexts(pairs);
+}
+
+function loadTexts(pairs) {
+  for (const [name, text] of pairs) {
+    const p = parseFile(name, text);
+    finishRun(p.run);
+    parsed.set(name, p);
+    rawTexts.set(name, text);
+  }
+  rebuild();
+  expanded.clear(); selLine = null;
+  for (const s of [...st.src]) if (!ALL.sources.includes(s)) st.src.delete(s);
+  $("drop").hidden = true; $("app").hidden = false;
+  update();
+}
+
+async function filesFromDrop(dt) {
+  const entries = [...dt.items].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  const walk = async (entry) => {
+    if (entry.isFile) out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        for (const e of batch) await walk(e);
+      } while (batch.length);
+    }
+  };
+  for (const e of entries) await walk(e);
+  return out;
+}
+
+// ---------------------------------------------------------------- events --
+function update(resetPage = true) {
+  if (resetPage) st.page = { days: 0, runs: 0 };
+  applyFilters(); render(); saveHash();
+}
+
+$("openBtn").onclick = () => $("dirInput").click();
+$("openFilesBtn").onclick = () => $("fileInput").click();
+$("dirInput").onchange = (e) => { loadFiles(e.target.files); e.target.value = ""; };
+$("fileInput").onchange = (e) => { loadFiles(e.target.files); e.target.value = ""; };
+
+let dragDepth = 0;
+window.addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; document.body.classList.add("dragging"); });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", async (e) => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove("dragging");
+  loadFiles(await filesFromDrop(e.dataTransfer));
+});
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-sb-toggle], [data-sb-all], [data-sum-show], [data-sum-lv], [data-goto-day], [data-combo], [data-sort], [data-src], [data-lv], [data-tab], [data-page], [data-day], #showSeg button, .lrow");
+  if (!t) return;
+  if (t.dataset.sbToggle) { const k = t.dataset.sbToggle; collapsed.has(k) ? collapsed.delete(k) : collapsed.add(k); return renderSidebar(); }
+  if (t.dataset.sbAll) { st.hiddenFiles = t.dataset.sbAll === "hide" ? new Set(ALL.runs.map((r) => r.file)) : new Set(); return update(); }
+  if (t.dataset.sumShow) { st.show = st.show === t.dataset.sumShow ? "all" : t.dataset.sumShow; return update(); }
+  if (t.dataset.sumLv) {
+    const l = t.dataset.sumLv;
+    st.lv = st.lv.size === 1 && st.lv.has(l) ? new Set(LEVELS) : new Set([l]);
+    return update();
+  }
+  if (t.dataset.gotoDay) {
+    // New tab with no other filters: just this source and this data date, every level, in the Lines tab.
+    const s = defaultState();
+    s.sort = st.sort; s.latest = st.latest; s.hiddenFiles = st.hiddenFiles;
+    s.src = new Set([t.dataset.gotoSrc]);
+    s.from = s.to = t.dataset.gotoDay;
+    s.tab = "lines";
+    const w = window.open(location.href.split("#")[0] + hashFor(s), "_blank");
+    if (w) childTabs.add(w);
+    return;
+  }
+  if (t.dataset.sort) return onSort(t.dataset.sortTab, t.dataset.sort, e.shiftKey);
+  if (t.dataset.src) { st.src.has(t.dataset.src) ? st.src.delete(t.dataset.src) : st.src.add(t.dataset.src); return update(); }
+  if (t.dataset.combo) {
+    const k = t.dataset.combo, next = { 0: 1, 1: -1, "-1": 0 }[st.combo[k] || 0];
+    if (next) st.combo[k] = next; else delete st.combo[k];
+    return update();
+  }
+  if (t.dataset.lv) { st.lv.has(t.dataset.lv) ? st.lv.delete(t.dataset.lv) : st.lv.add(t.dataset.lv); return update(); }
+  if (t.dataset.tab) { st.tab = t.dataset.tab; render(); return saveHash(); }
+  if (t.dataset.page) { st.page[t.dataset.pageTab] = +t.dataset.page; render(); return window.scrollTo({ top: 0 }); }
+  if (t.dataset.day) { const k = t.dataset.day; expanded.has(k) ? expanded.delete(k) : expanded.add(k); return renderDays(); }
+  if (t.parentElement === $("showSeg")) { st.show = t.dataset.v; return update(); }
+  if (t.classList.contains("lrow")) {
+    selLine = VIEW.lines[+t.dataset.i];
+    $("lineDetail").innerHTML = `<b>${esc(selLine.run.file)}:${selLine.ln}</b>  ${esc(selLine.t)} ${selLine.lvl}\n${esc(selLine.msg)}`;
+    drawLines();
+  }
+});
+
+let qTimer;
+$("q").oninput = (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { st.q = e.target.value.trim(); update(); }, 180); };
+$("dtSel").onchange = (e) => { st.dt = e.target.value; update(); };
+$("comboPreset").onchange = (e) => { st.combo = comboParse(e.target.value); update(); };
+$("fromIn").onchange = (e) => { st.from = e.target.value; update(); };
+$("toIn").onchange = (e) => { st.to = e.target.value; update(); };
+$("latestChk").onchange = (e) => { st.latest = e.target.checked; update(); };
+$("sidebar").addEventListener("change", (e) => {
+  const key = e.target.dataset.sbCheck;
+  if (!key) return;
+  for (const f of SB_FILES.get(key) || []) e.target.checked ? st.hiddenFiles.delete(f) : st.hiddenFiles.add(f);
+  update();
+});
+$("sbBtn").onclick = () => document.body.classList.toggle("sb-open");
+$("resetBtn").onclick = () => { const tab = st.tab; st = defaultState(); st.tab = tab; expanded.clear(); update(); };
+
+let raf = 0;
+$("vlist").addEventListener("scroll", () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; drawLines(); }); });
+window.addEventListener("resize", () => { if (st.tab === "lines" && ALL.lines.length) drawLines(); });
+
+$("csvBtn").onclick = () => {
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  let csv;
+  if (st.tab === "runs") {
+    csv = ["file,source,data_type,from,to,mode,country_codes,duration,days_done,retries,missing,failed,skipped,lines,status"]
+      .concat(VIEW.runs.map((r) => {
+        const c = (s) => r.dayList.filter((d) => d.status === s).length;
+        return [r.file, r.source, r.dataType, r.from, r.to, r.mode, r.ccs, r.durLabel, c("done"), r.warnings, c("missing"), c("failed"), c("skipped"), r.lineCount, r.status].map(q).join(",");
+      }));
+  } else {
+    csv = ["source,data_type,country_code,date,status,retries,error,rows,seconds,output,run_file,all_runs"]
+      .concat(VIEW.days.map((d) => [d.source, d.dataType, d.cc, d.day, d.status, d.attempts, d.err, d.rows, d.secs, d.path, d.run.file,
+        d.group.members.map((m) => m.status).join(" > ")].map(q).join(",")));
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv.join("\n")], { type: "text/csv" }));
+  a.download = `toplist_${st.tab}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+$("themeBtn").onclick = () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("toplist-log-theme", root.dataset.theme); } catch (_) {}
+};
+try { const t = localStorage.getItem("toplist-log-theme"); if (t) document.documentElement.dataset.theme = t; } catch (_) {}
+
+// ------------------------------------------------- tabs opened from dates --
+// A new tab can't see the files picked here, so it asks its opener for the raw log text.
+// Pages opened from file:// have opaque origins, hence targetOrigin "*"; replies only go to
+// windows this tab opened, and requests are only accepted from window.opener.
+const childTabs = new Set();
+window.addEventListener("message", (e) => {
+  const m = e.data;
+  if (!m || typeof m !== "object") return;
+  if (m.type === "toplist-logs-request" && childTabs.has(e.source) && rawTexts.size) {
+    e.source.postMessage({ type: "toplist-logs", files: [...rawTexts] }, "*");
+  } else if (m.type === "toplist-logs" && e.source === window.opener && Array.isArray(m.files) && !ALL.runs.length) {
+    loadTexts(m.files);
+    const one = st.src.size === 1 && st.from && st.from === st.to;
+    if (one) document.title = `${[...st.src][0]} ${st.from} · Toplist Log Viewer`;
+  }
+});
+
+loadHash();
+if (window.opener) {
+  const p = $("drop").querySelector("p");
+  const orig = p.innerHTML;
+  p.textContent = "Loading logs from the original tab…";
+  try { window.opener.postMessage({ type: "toplist-logs-request" }, "*"); } catch (_) {}
+  setTimeout(() => { if (!ALL.runs.length) p.innerHTML = orig; }, 3000);
+}
+</script>
+</body>
+</html>
