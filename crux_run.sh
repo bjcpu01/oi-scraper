@@ -21,6 +21,7 @@ QUERY_SCRIPT="${QUERY_SCRIPT:-src/openintel_scraper/toplists_query.py}"
 S3_BASE="${S3_BASE:-s3://openintel-clone-097027109922-us-east-1-an/raw/crux}"
 WEBHOOK="${DISCORD_WEBHOOK:-https://discord.com/api/webhooks/1570512841587425480/-UIaHJ0dyGWJNet5VZfb03EsSszNyu-Nuq69IgDtFEE5fEvxwVQXNvsym7JrdqRQPlYI}"
 DONE_FILE="output/crux_done.txt"
+STDERR_LOG="logs/crux_run_stderr.log"   # query script stderr (tracebacks etc.), also shown on screen
 
 cd "$(dirname "$0")" || exit 1
 
@@ -83,7 +84,7 @@ done
 for file in run.sh "$QUERY_SCRIPT"; do
     [[ -f $file ]] || { echo "Missing file: $file"; exit 1; }
 done
-mkdir -p output
+mkdir -p output logs
 touch "$DONE_FILE"
 
 # ----- Helpers -----
@@ -106,9 +107,44 @@ is_done() {
     grep -qx -e "$1/$2" -e "$1" "$DONE_FILE"
 }
 
-# Run the query script for country $1 and data type $2 by typing the menu answers for it.
+# Human-readable reason for a query script exit status.
+describe_status() {
+    case $1 in
+        137) echo "query killed by SIGKILL (likely out of memory - check dmesg)" ;;
+        139) echo "query crashed (segfault - see the crux log)" ;;
+        134) echo "query aborted (see the crux log)" ;;
+        130) echo "query interrupted" ;;
+        *)   echo "query exited with status $1 (see logs/crux_*.log and $STDERR_LOG)" ;;
+    esac
+}
+
+# Why the current country failed; shown in the FAILED notification.
+FAIL_REASON=""
+
+# Run the query script once for country $1 and data type $2 by typing the menu answers for it.
+# Extra environment for the script can be passed as further "NAME=value" arguments.
+query_once() {
+    local cc=$1 type=$2
+    shift 2
+    echo "----- $(date '+%F %T') [$cc] $type $* -----" >> "$STDERR_LOG"
+    printf '%s\n' crux "$DATE_ANSWERS" "$type" "$cc" y \
+        | env "$@" uv run "$QUERY_SCRIPT" 2> >(tee -a "$STDERR_LOG" >&2)
+    return "${PIPESTATUS[1]}"
+}
+
+# Query country $1 / data type $2. If the script is killed (usually out of memory), retry once
+# with one thread and a smaller memory limit; days already written are skipped on the retry.
 query() {
-    printf '%s\n' crux "$DATE_ANSWERS" "$2" "$1" y | uv run "$QUERY_SCRIPT"
+    local status
+    query_once "$1" "$2"
+    status=$?
+    if (( status == 137 )); then
+        notify "crux [$1]: $2 query was killed (likely OOM); retrying once with less memory"
+        query_once "$1" "$2" OPENINTEL_THREADS=1 OPENINTEL_MEMORY_FRACTION=0.25
+        status=$?
+    fi
+    (( status == 0 )) || FAIL_REASON="$2: $(describe_status "$status")"
+    return "$status"
 }
 
 # Query email_related for country $1, upload the files, then notify.
@@ -118,7 +154,8 @@ process_email_related() {
 
     query "$cc" email_related || return 1
     if has_files "$dir" '*.parquet'; then
-        aws s3 cp "$dir/" "$S3_BASE/$cc/email_related" --recursive || return 1
+        aws s3 cp "$dir/" "$S3_BASE/$cc/email_related" --recursive \
+            || { FAIL_REASON="email_related: S3 upload failed"; return 1; }
         notify "crux [$cc]: email_related uploaded to S3"
     else
         notify "crux [$cc]: no email_related data for this date selection"
@@ -132,8 +169,9 @@ process_query_name() {
 
     query "$cc" query_name || return 1
     if has_files "$dir" '*.txt'; then
-        bash run.sh "$dir" || return 1
-        aws s3 cp "$dir/all.txt" "$S3_BASE/$cc/query_name/all.txt" || return 1
+        bash run.sh "$dir" || { FAIL_REASON="query_name: merge (run.sh) failed"; return 1; }
+        aws s3 cp "$dir/all.txt" "$S3_BASE/$cc/query_name/all.txt" \
+            || { FAIL_REASON="query_name: S3 upload failed"; return 1; }
         local lines
         lines=$(wc -l < "$dir/all.txt")
         notify "crux [$cc]: query_name merged ($lines unique names) and uploaded to S3"
@@ -181,11 +219,12 @@ for cc in "${COUNTRIES[@]}"; do
     fi
 
     current=$cc
+    FAIL_REASON=""
     if process_country "$cc"; then
         ok=$((ok + 1))
     else
         failed+=("$cc")
-        notify "crux [$cc]: FAILED - local folder kept, re-run to retry"
+        notify "crux [$cc]: FAILED (${FAIL_REASON:-unknown}) - local folder kept, re-run to retry"
     fi
 done
 

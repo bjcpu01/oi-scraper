@@ -16,9 +16,11 @@ selection resumes: days that already have an output are skipped.
 from __future__ import annotations
 
 import calendar
+import faulthandler
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -26,6 +28,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
+
+try:
+    import resource  # Unix only; used to log peak memory
+except ImportError:
+    resource = None
 
 # --------------------------------------------------------------------------- #
 # Static configuration (rarely changes)
@@ -46,9 +53,32 @@ PUBLISH_LAG_DAYS = 2
 # Script-level retry waits (seconds) after DuckDB's own HTTP retries give up.
 RETRY_WAITS = [int(x) for x in os.environ.get("OPENINTEL_RETRY_WAITS", "30,60,120").split(",") if x.strip()]
 
+
+def total_ram_bytes() -> int | None:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+TOTAL_RAM = total_ram_bytes()
+SMALL_BOX = TOTAL_RAM is not None and TOTAL_RAM < 2 * 2**30  # e.g. t3.micro (1 GiB)
+
+# DuckDB's memory_limit only covers its buffer pool; parquet decoding, S3/HTTP buffers and
+# Python come on top of it, so keep well below physical RAM. Override with
+# OPENINTEL_MEMORY_LIMIT (e.g. "350MB") or OPENINTEL_MEMORY_FRACTION (e.g. "0.25").
+MEMORY_FRACTION = float(os.environ.get("OPENINTEL_MEMORY_FRACTION", "0.4"))
+MEMORY_LIMIT = os.environ.get("OPENINTEL_MEMORY_LIMIT") or (
+    f"{int(TOTAL_RAM * MEMORY_FRACTION / 2**20)}MB" if TOTAL_RAM else None
+)
+# Spill-to-disk cap; default is half of the free space on the output disk at start-up.
+MAX_TEMP_SIZE = os.environ.get("OPENINTEL_MAX_TEMP_SIZE")
+
 DUCKDB_SETTINGS = {
-    "s3_list_concurrency": 8,
-    "http_client_pool_capacity": 8,
+    # Each thread keeps its own row groups and S3 read buffers in flight.
+    "threads": int(os.environ.get("OPENINTEL_THREADS", "1" if SMALL_BOX else "2")),
+    "s3_list_concurrency": 2 if SMALL_BOX else 4,
+    "http_client_pool_capacity": 2 if SMALL_BOX else 4,
     "http_retries": 10,
     "http_retry_wait_ms": 1000,
     "http_retry_backoff": 2,
@@ -294,13 +324,12 @@ def connect() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect()
     for k, v in DUCKDB_SETTINGS.items():
         con.execute(f"SET {k} = {v}")
-    try:
-        mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        con.execute(f"SET memory_limit = '{int(mem * 0.7 / 2**20)}MB'")
-    except (ValueError, OSError):
-        pass
+    if MEMORY_LIMIT:
+        con.execute(f"SET memory_limit = '{sql_path(MEMORY_LIMIT)}'")
     DUCKDB_TMP_DIR.mkdir(parents=True, exist_ok=True)
     con.execute(f"SET temp_directory = '{sql_path(DUCKDB_TMP_DIR)}'")
+    max_temp = MAX_TEMP_SIZE or f"{shutil.disk_usage(DUCKDB_TMP_DIR).free // 2 // 2**20}MB"
+    con.execute(f"SET max_temp_directory_size = '{sql_path(max_temp)}'")
     con.execute("SET preserve_insertion_order = false")
     con.execute(
         "CREATE OR REPLACE SECRET openintel (TYPE S3, REGION '{}', ENDPOINT '{}', URL_STYLE 'path')".format(REGION, ENDPOINT)
@@ -309,21 +338,19 @@ def connect() -> duckdb.DuckDBPyConnection:
 
 
 def write_txt(con: duckdb.DuckDBPyConnection, query: str, dest: Path) -> int:
-    """Stream single-column query results to dest (atomically). Returns line count."""
+    """COPY single-column query results to dest as plain lines (atomically). Returns line count.
+
+    No quoting/escaping, so each line is the raw value; the query must exclude NULLs.
+    """
     tmp = dest.with_name(dest.name + ".tmp")
-    n = 0
     try:
-        res = con.execute(query)
-        with tmp.open("w", encoding="utf-8") as f:
-            while rows := res.fetchmany(100_000):
-                for (name,) in rows:
-                    if name is not None:
-                        f.write(f"{name}\n")
-                        n += 1
+        res = con.execute(
+            f"COPY ({query}) TO '{sql_path(tmp)}' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '')"
+        ).fetchone()
         tmp.replace(dest)
     finally:
         tmp.unlink(missing_ok=True)
-    return n
+    return int(res[0]) if res else 0
 
 
 def write_parquet(con: duckdb.DuckDBPyConnection, query: str, dest: Path) -> int:
@@ -341,7 +368,7 @@ def day_query(data_type: str, src_glob: str) -> str:
     """Query over one day's parquet files."""
     rp = f"read_parquet('{sql_path(src_glob)}', hive_partitioning = true)"
     if data_type == "query_name":
-        return f"SELECT DISTINCT query_name FROM {rp} ORDER BY query_name"
+        return f"SELECT DISTINCT query_name FROM {rp} WHERE query_name IS NOT NULL ORDER BY query_name"
     return f"SELECT {EMAIL_COLUMNS} FROM {rp} WHERE {EMAIL_FILTER}"
 
 
@@ -359,6 +386,13 @@ class Stats:
 
     def summary(self) -> str:
         return f"done={self.done} skipped={self.skipped} missing={self.missing} failed={len(self.failed)}"
+
+
+def peak_rss() -> str:
+    """Peak resident memory of this process so far (Linux reports ru_maxrss in KiB)."""
+    if resource is None:
+        return "peak RSS n/a"
+    return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MiB"
 
 
 def with_retries(label: str, fn):
@@ -421,7 +455,7 @@ class Runner:
         except duckdb.Error:
             self.stats.failed.append(label)
             return False
-        log.info(f"{label}: wrote {n:,} rows -> {dest} ({time.monotonic() - t0:.1f}s)")
+        log.info(f"{label}: wrote {n:,} rows -> {dest} ({time.monotonic() - t0:.1f}s, {peak_rss()})")
         self.stats.done += 1
         return True
 
@@ -468,6 +502,9 @@ def main() -> int:
         src = SOURCES[choose("Source:", names, labels)]
         log_path = setup_logging(src.name)
         log.debug(f"log file: {log_path}")
+        # Dump a native stack trace into the log if DuckDB segfaults/aborts.
+        fault_file = log_path.open("a", encoding="utf-8")
+        faulthandler.enable(file=fault_file)
         start, end, date_mode = choose_dates(src, today)
         data_type = choose(
             "Data type:",
@@ -499,15 +536,28 @@ def main() -> int:
     log.info(f"endpoint={ENDPOINT} duckdb={duckdb.__version__} settings={DUCKDB_SETTINGS} retry_waits={RETRY_WAITS}")
     remove_stale_tmp(src.name)
     t0 = time.monotonic()
-    runner = Runner(src.name, start, end, data_type, ccs)
     code = 0
+    runner = None
     try:
+        runner = Runner(src.name, start, end, data_type, ccs)
+        ram = f"{TOTAL_RAM / 2**30:.1f}GiB" if TOTAL_RAM else "unknown"
+        mem, threads, max_temp = runner.con.execute(
+            "SELECT current_setting('memory_limit'), current_setting('threads'),"
+            " current_setting('max_temp_directory_size')"
+        ).fetchone()
+        log.info(f"ram={ram} memory_limit={mem} threads={threads} max_temp_directory_size={max_temp}")
         runner.run()
     except KeyboardInterrupt:
         log.warning("interrupted by user")
         code = 130
+    except Exception:
+        log.exception("run aborted by unexpected error")
+        code = 1
     elapsed = timedelta(seconds=int(time.monotonic() - t0))
-    log.info(f"run finished in {elapsed}: {runner.stats.summary()}")
+    if runner is None:
+        log.info(f"log: {log_path}")
+        return code
+    log.info(f"run finished in {elapsed}: {runner.stats.summary()}, {peak_rss()}")
     if runner.stats.failed:
         log.error("failed units: " + "; ".join(runner.stats.failed))
         code = code or 1

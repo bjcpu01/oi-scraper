@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+# Byte-order sorting: matches DuckDB's ORDER BY in the input files (required by sort -m) and is faster.
+export LC_ALL=C
 
 FOLDER="${1:-.}"
 OUTPUT="$FOLDER/all.txt"
